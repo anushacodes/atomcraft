@@ -14,8 +14,17 @@ async function unmetDependencies(step) {
 
   const all = await listSteps();
   return dependsOn.filter((depId) => {
-    const dep = all.find((s) => s.id === depId);
-    return !dep || dep.status !== 'done';
+    const directStep = all.find((s) => s.id === depId);
+    if (directStep) {
+      return directStep.status !== 'done';
+    }
+
+    const parentSteps = all.filter((s) => s.taskId === depId);
+    if (parentSteps.length > 0) {
+      return !parentSteps.every((s) => s.status === 'done');
+    }
+
+    return true;
   });
 }
 

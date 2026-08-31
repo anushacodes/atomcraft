@@ -32,7 +32,6 @@ export function parseTasksFile(raw) {
   const lines = raw.split('\n');
 
   // Split into sections keyed by their heading line index.
-  // Each section: { level: 2|3, heading, startLine, lines[] }
   const sections = [];
   for (let i = 0; i < lines.length; i++) {
     const h2 = lines[i].match(/^##\s+(.+)/);
@@ -46,29 +45,51 @@ export function parseTasksFile(raw) {
     }
   }
 
-  // Walk sections, tracking current task context, emit step objects.
-  const steps = [];
-  let currentTaskId = null;
-  let currentTaskTitle = null;
+  // First pass: organize into tasks and their child steps.
+  const taskGroups = [];
+  let currentGroup = null;
 
   for (const section of sections) {
     if (section.level === 2) {
-      // ## <taskId> — <taskTitle>
-      const match = section.heading.match(/^(\S+)\s*[—-]\s*(.+)/);
-      currentTaskId = match ? match[1].trim() : section.heading;
-      currentTaskTitle = match ? match[2].trim() : section.heading;
+      const match = section.heading.match(/^([a-zA-Z0-9_-]+)\s*[—-]\s*(.+)/);
+      const taskId = match ? match[1].trim() : section.heading;
+      const taskTitle = match ? match[2].trim() : section.heading;
+
+      currentGroup = {
+        taskId,
+        taskTitle,
+        section,
+        childSteps: [],
+      };
+      taskGroups.push(currentGroup);
       continue;
     }
 
-    // level === 3: ### <stepId> — <stepTitle>
-    const match = section.heading.match(/^(\S+)\s*[—-]\s*(.+)/);
-    const id = match ? match[1].trim() : section.heading;
-    const title = match ? match[2].trim() : section.heading;
+    // level === 3
+    const match = section.heading.match(/^([a-zA-Z0-9_-]+)\s*[—-]\s*(.+)/);
+    if (!match) {
+      // Regular markdown subheading inside the current task/step
+      if (currentGroup && currentGroup.childSteps.length > 0) {
+        currentGroup.childSteps[currentGroup.childSteps.length - 1].section.lines.push(`### ${section.heading}`, ...section.lines);
+      } else if (currentGroup) {
+        currentGroup.section.lines.push(`### ${section.heading}`, ...section.lines);
+      }
+      continue;
+    }
 
-    // Extract inline metadata from the top lines of the body.
+    const stepId = match[1].trim();
+    const stepTitle = match[2].trim();
+    if (currentGroup) {
+      currentGroup.childSteps.push({ stepId, stepTitle, section });
+    }
+  }
+
+  // Second pass: emit step objects.
+  const steps = [];
+
+  function extractMetadata(bodyLines) {
     let status = 'pending';
     let depends_on = [];
-    const bodyLines = section.lines;
 
     for (const line of bodyLines) {
       const statusMatch = line.match(/^status:\s*(.+)/);
@@ -86,17 +107,36 @@ export function parseTasksFile(raw) {
         continue;
       }
     }
+    return { status, depends_on };
+  }
 
-    steps.push({
-      id,
-      title,
-      taskId: currentTaskId,
-      taskTitle: currentTaskTitle,
-      status,
-      depends_on,
-      // Full body text (everything between this ### and the next heading).
-      body: bodyLines.join('\n').trimEnd(),
-    });
+  for (const group of taskGroups) {
+    if (group.childSteps.length > 0) {
+      for (const child of group.childSteps) {
+        const { status, depends_on } = extractMetadata(child.section.lines);
+        steps.push({
+          id: child.stepId,
+          title: child.stepTitle,
+          taskId: group.taskId,
+          taskTitle: group.taskTitle,
+          status,
+          depends_on,
+          body: child.section.lines.join('\n').trimEnd(),
+        });
+      }
+    } else {
+      // Task has no child steps (e.g. non-atomized setup task) -> treat task as runnable step
+      const { status, depends_on } = extractMetadata(group.section.lines);
+      steps.push({
+        id: group.taskId,
+        title: group.taskTitle,
+        taskId: group.taskId,
+        taskTitle: group.taskTitle,
+        status,
+        depends_on,
+        body: group.section.lines.join('\n').trimEnd(),
+      });
+    }
   }
 
   return steps;
@@ -125,43 +165,56 @@ export async function getStep(id) {
 
 /**
  * Update the `status:` line for the given step id in-place and write the file
- * back. Only the matching line inside the correct `###` section is touched;
- * all other content is preserved verbatim.
+ * back. Supports both `## <id>` and `### <id>` section headings.
  */
 export async function setStepStatus(stepId, status) {
   const { tasks } = paths();
   const raw = await fs.readFile(tasks, 'utf8');
   const lines = raw.split('\n');
 
-  // Find the ### heading line for this step.
-  const stepHeadingRe = new RegExp(`^###\\s+${escapeRegex(stepId)}\\s*[—-]`);
+  // Find the ## or ### heading line for this step.
+  const stepHeadingRe = new RegExp(`^#{2,3}\\s+${escapeRegex(stepId)}\\s*[—-]`);
   let inTargetSection = false;
   let statusLineReplaced = false;
+  let headingIndex = -1;
 
-  const updated = lines.map((line) => {
-    // Entering this step's section.
+  const updated = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
     if (stepHeadingRe.test(line)) {
       inTargetSection = true;
       statusLineReplaced = false;
-      return line;
+      headingIndex = updated.length;
+      updated.push(line);
+      continue;
     }
 
-    // Leaving this section on the next heading at any level.
-    if (inTargetSection && /^#{2,}\s/.test(line)) {
+    if (inTargetSection && /^#{2,3}\s+[a-zA-Z0-9_-]+\s*[—-]/.test(line)) {
+      // Leaving section without finding status line -> insert one
+      if (!statusLineReplaced) {
+        updated.splice(headingIndex + 1, 0, `status: ${status}`);
+        statusLineReplaced = true;
+      }
       inTargetSection = false;
     }
 
-    // Replace the first `status:` line we encounter inside the section.
     if (inTargetSection && !statusLineReplaced && /^status:\s/.test(line)) {
       statusLineReplaced = true;
-      return `status: ${status}`;
+      updated.push(`status: ${status}`);
+      continue;
     }
 
-    return line;
-  });
+    updated.push(line);
+  }
+
+  if (inTargetSection && !statusLineReplaced) {
+    updated.splice(headingIndex + 1, 0, `status: ${status}`);
+    statusLineReplaced = true;
+  }
 
   if (!statusLineReplaced) {
-    throw new Error(`Could not find "status:" line for step "${stepId}" in .atomcraft/tasks.md`);
+    throw new Error(`Could not find section for step "${stepId}" in .atomcraft/tasks.md`);
   }
 
   await fs.writeFile(tasks, updated.join('\n'));
