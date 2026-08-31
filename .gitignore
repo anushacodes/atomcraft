@@ -1,0 +1,12 @@
+node_modules/
+sandbox/
+test-project/
+
+.atomcraft/
+.claude/
+.cursor/
+.codex/
+.gemini/
+.opencode/
+.sandbox/
+sandbox/
