@@ -1,121 +1,125 @@
 # atomcraft
 
-Spec-driven, atomic-task scaffolding for AI coding agents. Install once per
-project; works across Claude Code, Cursor, Codex CLI, and Gemini CLI.
+Spec-driven, atomic-task scaffolding for AI coding agents. Install once per project; works across Claude Code, Cursor, Codex CLI, and Gemini CLI.
 
-## How it's different
+## Overview
 
-Existing spec-driven tools (BMAD-METHOD, GitHub Spec-Kit, OpenSpec) scaffold
-commands that take you from idea -> spec -> tasks -> implementation. atomcraft
-adds two things on top:
+atomcraft structures AI-assisted development into small, reviewable steps. It captures project vision and architecture as files, breaks work into atomic subtasks, and executes each subtask in an isolated agent process with built-in review gates.
 
-1. **Atom-sized tasks by default.** The `atomize` step exists specifically to
-   break feature-level tasks into pieces small enough to review in under
-   three minutes and commit in under ~100 lines.
-2. **Automatic context isolation per subtask.** Instead of relying on one
-   long agent session (or you manually starting a new chat), `atomcraft
-   implement <subtask-id>` spawns a brand-new OS process running your agent
-   CLI, fed nothing but that one subtask file. Fresh process == fresh
-   context, with no manual "clear context" step. All state that needs to
-   survive between subtasks lives in `.atomcraft/` files, not in any
-   session's memory.
+Each subtask is scoped to be reviewable in under 3 minutes and committable in under ~100 lines.
 
-## Install
+## Features
+
+- **Spec-driven workflow** — vision, architecture, and tasks stored as versioned files in `.atomcraft/`
+- **Atomic decomposition** — feature tasks broken into small subtasks with explicit acceptance criteria
+- **Isolated execution** — each subtask runs in a fresh agent process with no shared session memory
+- **Cross-tool support** — compiles workflow commands for detected agent CLIs from a single set of templates
+- **Review gates** — diff size checks and approve/reject/redo flow before any commit
+- **File-based state** — all progress tracked in `.atomcraft/tasks.md`, no external database required
+
+## Requirements
+
+- Node.js >= 18
+
+## Installation
 
 ```bash
-npm install -g atomcraft   # or: npx atomcraft init
+npm install -g atomcraft
 ```
 
-## Usage
+Or run without installing:
+
+```bash
+npx atomcraft init
+```
+
+## Quick Start
 
 ```bash
 cd your-project
-atomcraft init        # scaffolds .atomcraft/ and compiles slash commands
-                       # for whichever agent CLIs are on your PATH
+atomcraft init
 ```
 
-This creates:
+This scaffolds the project state and compiles workflow commands for any agent CLI found on your `PATH`:
 
 ```
 .atomcraft/
   vision.md
-  architecture.md      # written once you run the compiled "architecture" command
-  tasks.md             # flat markdown file; all tasks and atomic steps live here
+  architecture.md
+  tasks.md
+
+.claude/commands/*.md
+.cursor/commands/*
+.gemini/commands/*.toml
+# ... depending on detected tools
 ```
 
-and compiles the five workflow commands into whatever format each detected
-tool expects, e.g.:
+## Workflow
 
-```
-.claude/commands/init.md
-.claude/commands/architecture.md
-.claude/commands/tasks.md
-.claude/commands/atomize.md
-.claude/commands/implement.md
+Run these commands inside your agent CLI:
 
-.gemini/commands/init.toml
-...
-```
+| Command | Description |
+|---------|-------------|
+| `/init` | Capture project vision into `.atomcraft/vision.md` |
+| `/architecture` | Define technical constraints and system architecture |
+| `/tasks` | Generate feature-level tasks from the architecture |
+| `/atomize <id>` | Break a task into atomic subtasks (<100 lines, <3 min review) |
 
-Then, inside your agent CLI:
-
-```
-/init            -> writes .atomcraft/vision.md from a conversation
-/architecture    -> interviews you on hard vs soft technical constraints
-/tasks           -> breaks the architecture into feature-level tasks
-/atomize <id>    -> breaks one task into <100-line, <3-minute-review subtasks
-```
-
-Then, back in your terminal — this is the part that runs outside any single
-agent session:
+Execute subtasks from your terminal, outside the agent session:
 
 ```bash
-atomcraft next             # implements the next pending subtask in a fresh process
-atomcraft implement 001b   # or target one specific subtask
-atomcraft status           # see what's pending / done / failed
+atomcraft status              # show pending / done / failed subtasks
+atomcraft next                # run the next pending subtask
+atomcraft implement 001b      # run a specific subtask
 ```
 
-After the agent finishes, `atomcraft implement` (and `next`) automatically:
+After each run, atomcraft:
 
-1. Runs `git diff --stat` and prints it for review.
-2. Warns if the diff exceeds 100 lines changed; hard-stops if it exceeds 200.
-3. Prompts `[a]pprove / [r]eject / [R]edo` — on approve the harness commits
-   and marks the step done in `.atomcraft/tasks.md`; reject marks the step
-   failed (leaving the working tree as-is for manual review); redo resets the
-   step to pending so you can re-run `implement` on it.
+1. Prints `git diff --stat`
+2. Warns if the diff exceeds 100 lines, stops if it exceeds 200
+3. Prompts `[a]pprove / [r]eject / [R]edo`
 
-Nothing about the implementation step depends on keeping a chat session open.
+- **Approve** — commits the change and marks the subtask done
+- **Reject** — marks the subtask failed, leaves the working tree for manual review
+- **Redo** — resets the subtask to pending for re-execution
 
-## Project layout
+## CLI Reference
 
 ```
-bin/cli.js                 CLI entrypoint (commander)
-src/agents.js              detects installed agent CLIs, spawns headless processes
-src/state.js                reads/writes .atomcraft/tasks.md (flat markdown)
-src/commands/init.js         `atomcraft init`
-src/commands/compile.js      compiles neutral templates -> tool-specific command files
-src/commands/implement.js    `atomcraft implement <id>` — the isolation trick
-src/commands/next.js         `atomcraft next`
-src/commands/status.js       `atomcraft status`
-templates/commands/*.md      the 5 neutral, tool-agnostic command definitions
+atomcraft init [--agent <name>]        Initialize .atomcraft/ and compile commands
+atomcraft compile [--agent <name>]     Re-compile command templates for detected CLIs
+atomcraft implement <subtaskId>        Run a single subtask in an isolated process
+atomcraft next                         Run the next pending subtask
+atomcraft status                       Show progress across tasks and subtasks
 ```
 
-## Adding support for a new agent CLI
+Supported `--agent` values: `claude`, `cursor`, `codex`, `gemini`, `opencode`
 
-Two places, both small:
+## How It Works
 
-1. `src/agents.js` — add an entry to `AGENTS` with the binary name and the
-   non-interactive invocation args for that CLI.
-2. `src/commands/compile.js` — add an entry to `ADAPTERS` describing where
-   that tool looks for custom commands and what format it expects.
+`atomcraft implement` and `atomcraft next` spawn a new OS process running your agent CLI with only the target subtask file as context. This guarantees a fresh context per subtask without manual session resets. All durable state — specs, task definitions, and progress — lives on the filesystem in `.atomcraft/`.
 
-Nothing else needs to change — the five templates in `templates/commands/`
-are shared by every tool.
+## Project Structure
 
-## Known rough edges (by design, this is a starting scaffold)
+```
+bin/cli.js                      CLI entrypoint
+src/agents.js                   Agent detection and headless process spawning
+src/state.js                    Reads/writes .atomcraft/tasks.md
+src/commands/init.js            `atomcraft init`
+src/commands/compile.js         Compiles templates to tool-specific formats
+src/commands/implement.js       `atomcraft implement <id>`
+src/commands/next.js            `atomcraft next`
+src/commands/status.js          `atomcraft status`
+templates/commands/*.md         Tool-agnostic command definitions
+```
 
-- The exact CLI flags in `src/agents.js` (`-p`, `exec`, etc.) are
-  illustrative — verify against each tool's current `--help` output before
-  relying on this, since agent CLIs change their flags frequently.
-- A preferred-agent config in `.atomcraft/config.json` is not yet implemented
-  — `atomcraft implement` picks the first available agent found on PATH.
+## Adding a New Agent
+
+1. `src/agents.js` — add an entry to `AGENTS` with the binary name and headless invocation args
+2. `src/commands/compile.js` — add an entry to `ADAPTERS` with the command path and file format
+
+No changes to `templates/commands/` are required.
+
+## License
+
+MIT
